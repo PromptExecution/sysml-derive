@@ -1,0 +1,22 @@
+[package]
+name = "sysml-derive"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "#[derive(SysmlBlock)] walks a struct's fields via its AST (syn) and generates a SysML v2 block definition at compile time."
+repository = "https://github.com/PromptExecution/sysml-derive"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+# Test-only: validates the actual generated sysml_block_def() text against
+# a real SysML v2 grammar (ufo_types::sysml, wired to sysml-v2-parser) —
+# see tests/real_grammar_validation.rs. Not a runtime dependency of the
+# proc-macro itself.
+ufo-types = { git = "https://github.com/PromptExecution/ufo-types.git", rev = "fd3b777", features = ["sysml"] }
