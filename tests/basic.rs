@@ -37,7 +37,7 @@ struct Classification {
 fn emits_block_def_with_scalar_and_vec_attributes() {
     let block = Transaction::sysml_block_def();
     assert!(block.starts_with("part def Transaction {\n"));
-    assert!(block.contains("    attribute tx_id : String;\n"));
+    assert!(block.contains("    attribute tx_id : ScalarValues::String;\n"));
     assert!(block.contains("    attribute source_rows : NodeId[*];\n"));
     assert!(block.ends_with("}\n"));
 }
@@ -45,6 +45,6 @@ fn emits_block_def_with_scalar_and_vec_attributes() {
 #[test]
 fn emits_optional_attribute_with_zero_to_one_multiplicity() {
     let block = Classification::sysml_block_def();
-    assert!(block.contains("    attribute sub_category : String[0..1];\n"));
-    assert!(block.contains("    attribute category : String;\n"));
+    assert!(block.contains("    attribute sub_category : ScalarValues::String[0..1];\n"));
+    assert!(block.contains("    attribute category : ScalarValues::String;\n"));
 }

@@ -1,0 +1,6 @@
+[
+  {"resolved":["Domain::Node", "Domain::Sequence", "ScalarValues::String"], "missing":[]},
+  {"resolved":["Domain::Node", "Domain::Sequence"], "missing":["ScalarValues::String"]},
+  {"resolved":["ScalarValues::String"], "missing":["Domain::Node", "Domain::Sequence"]},
+  {"resolved":["Node", "Sequence", "String"], "missing":["Domain::Node", "Domain::Sequence", "ScalarValues::String"]}
+]
