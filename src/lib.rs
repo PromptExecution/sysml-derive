@@ -147,6 +147,34 @@ pub fn derive_sysml_trace(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[derive(SysmlVerificationCase)]` — emits a SysML v2 `verification
+/// def <id> { verify requirement <req>; }` block, combining the
+/// outer definition form with the inner `verify` trace relation. The
+/// audit's VerificationCase acceptance gate is a peer of the
+/// `SysmlRequirement` and `SysmlTrace` derivations and the same
+/// `validation def` shape that the integration tests expect to land
+/// on a real OMG server.
+///
+/// Attributes:
+/// - `#[sysml(id = "VC_1")]` — the verification case identifier
+///   (default: struct ident). Same identifier rules as
+///   `SysmlRequirement::id`.
+/// - `#[sysml(requirement = "REQ_1")]` — the requirement this case
+///   verifies. Required; a verification case without a target
+///   requirement is a metadata error caught at compile time.
+///
+/// The kind on round-trip is `ufo_types::ElementKind::VerificationCaseDefinition`
+/// (the wrapper); the inner `verify` line is the trace, separately
+/// satisfied by the `SysmlTrace` derive.
+#[proc_macro_derive(SysmlVerificationCase, attributes(sysml))]
+pub fn derive_sysml_verification_case(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match expand_verification_case(&input) {
+        Ok(expanded) => expanded.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
 fn expand_block(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
@@ -532,6 +560,83 @@ fn read_trace_meta(attrs: &[syn::Attribute]) -> syn::Result<(TraceKind, String, 
         })?;
         Ok((kind, requirement, target.unwrap_or_default()))
     }
+}
+
+fn expand_verification_case(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    if !matches!(input.data, Data::Struct(_)) {
+        return Err(syn::Error::new_spanned(
+            input,
+            "SysmlVerificationCase only supports structs (unit or otherwise)",
+        ));
+    }
+
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let name = &input.ident;
+    let (id_text, requirement) = read_verification_case_meta(&input.attrs, name.to_string())?;
+
+    let verification_def = format!(
+        "verification def {id_text} {{\n    verify requirement {requirement};\n}}\n"
+    );
+
+    let expanded = quote! {
+        impl #impl_generics #name #type_generics #where_clause {
+            /// SysML-v2 verification-case definition text for this type,
+            /// generated at compile time by `#[derive(SysmlVerificationCase)]`.
+            /// Composes with `SysmlRequirement` for the target requirement.
+            pub const fn sysml_verification_case_def() -> &'static str {
+                #verification_def
+            }
+
+            /// The identifier of the requirement this case verifies.
+            pub const fn sysml_verification_target() -> &'static str {
+                #requirement
+            }
+        }
+    };
+
+    Ok(expanded)
+}
+
+fn read_verification_case_meta(
+    attrs: &[syn::Attribute],
+    default_id: String,
+) -> syn::Result<(String, String)> {
+    let mut id: Option<String> = None;
+    let mut requirement: Option<String> = None;
+    for attribute in attrs.iter().filter(|a| a.path().is_ident("sysml")) {
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("id") {
+                if id.is_some() {
+                    return Err(meta.error("duplicate SysmlVerificationCase id"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                validate_identifier(&value, "SysmlVerificationCase id")?;
+                id = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("requirement") {
+                if requirement.is_some() {
+                    return Err(meta.error("duplicate SysmlVerificationCase requirement"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                validate_identifier(&value, "SysmlVerificationCase requirement")?;
+                requirement = Some(value);
+                Ok(())
+            } else {
+                Err(meta.error(
+                    "expected #[sysml(id = \"...\")] and/or #[sysml(requirement = \"...\")]",
+                ))
+            }
+        })?;
+    }
+    let requirement = requirement.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "SysmlVerificationCase requires #[sysml(requirement = \"...\")]",
+        )
+    })?;
+    Ok((id.unwrap_or(default_id), requirement))
 }
 
 fn field_mapping(field: &syn::Field) -> syn::Result<Option<String>> {
