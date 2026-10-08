@@ -104,17 +104,61 @@ pub fn derive_sysml_requirement(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[derive(SysmlTrace)]` — emits a SysML v2 trace-relation statement for
+/// a unit struct whose identifier is the role in the relation. The
+/// relation kind is selected by a required `#[sysml(kind = "...")]`
+/// attribute, one of:
+///
+/// - `kind = "satisfy"` — emits `satisfy requirement <REQ_ID> by <SelfName>;`
+///   (the part named `<SelfName>` satisfies the requirement `<REQ_ID>`).
+/// - `kind = "derive"` — emits `requirement <SelfName> :> <REQ_ID>;` (a
+///   derived requirement; uses the specialization operator `:>` as the
+///   `derive` syntax in the pinned `sysml-v2-parser`).
+/// - `kind = "refine"` — emits `requirement <SelfName> :>> <REQ_ID>;`
+///   (refinement via redefinition-specialization).
+/// - `kind = "verify"` — emits `verify requirement <REQ_ID>;` to be
+///   placed inside a `verification def <SelfName> { ... }` block
+///   owned by the caller; the derive returns only the inner
+///   statement, not the wrapper, because `verification def` is a
+///   definition form that the `SysmlRequirement` derive does not yet
+///   cover.
+/// - `kind = "allocate"` — emits `allocate <SelfName> to <TARGET_ID>;`
+///   where `<TARGET_ID>` comes from `#[sysml(target = "...")]`.
+///
+/// All five require `#[sysml(requirement = "REQ_ID")]` (for the first four)
+/// or `#[sysml(target = "TGT_ID")]` (for `allocate`) on the same struct.
+/// The kind/requirement/target identifiers use the same identifier
+/// rules as `SysmlRequirement::id` — leading letter/underscore, then
+/// letters/digits/underscores; hyphens and other punctuation are
+/// rejected at compile time. This matches what the pinned
+/// `sysml-v2-parser` accepts.
+///
+/// `SysmlTrace` does not produce a `part def` or `requirement def`
+/// wrapper — the caller is expected to compose the trace statement
+/// with a `SysmlBlock` or `SysmlRequirement` for the subject element,
+/// or to include the verify statement in a `verification def` it
+/// authors directly.
+#[proc_macro_derive(SysmlTrace, attributes(sysml))]
+pub fn derive_sysml_trace(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match expand_trace(&input) {
+        Ok(expanded) => expanded.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
 fn expand_block(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
 
-    let named_fields = match &input.data {
+    let named_fields: Vec<&syn::Field> = match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
+            Fields::Named(named) => named.named.iter().collect(),
+            Fields::Unit => Vec::new(),
             _ => {
                 return Err(syn::Error::new_spanned(
                     input,
-                    "SysmlBlock only supports structs with named fields",
+                    "SysmlBlock only supports structs with named fields or unit structs",
                 ));
             }
         },
@@ -176,13 +220,14 @@ fn expand_requirement(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
 
-    let named_fields = match &input.data {
+    let named_fields: Vec<&syn::Field> = match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
+            Fields::Named(named) => named.named.iter().collect(),
+            Fields::Unit => Vec::new(),
             _ => {
                 return Err(syn::Error::new_spanned(
                     input,
-                    "SysmlRequirement only supports structs with named fields",
+                    "SysmlRequirement only supports structs with named fields or unit structs",
                 ));
             }
         },
@@ -322,6 +367,171 @@ fn read_requirement_meta(
         })?;
     }
     Ok((id.unwrap_or(default_id), doc.unwrap_or_default()))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TraceKind {
+    Satisfy,
+    Derive,
+    Refine,
+    Verify,
+    Allocate,
+}
+
+fn trace_kind_from_str(s: &str) -> Option<TraceKind> {
+    match s {
+        "satisfy" => Some(TraceKind::Satisfy),
+        "derive" => Some(TraceKind::Derive),
+        "refine" => Some(TraceKind::Refine),
+        "verify" => Some(TraceKind::Verify),
+        "allocate" => Some(TraceKind::Allocate),
+        _ => None,
+    }
+}
+
+fn validate_identifier(value: &str, field: &str) -> syn::Result<()> {
+    if value.is_empty()
+        || value.contains(char::is_whitespace)
+        || value.contains("*/")
+        || value.contains('"')
+        || value.contains('\n')
+        || value
+            .chars()
+            .next()
+            .map(|c| !c.is_ascii_alphabetic() && c != '_')
+            .unwrap_or(true)
+        || value
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+    {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "{field} must be a SysML identifier: leading letter/underscore, then letters/digits/underscores only"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn expand_trace(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    if !matches!(input.data, Data::Struct(_)) {
+        return Err(syn::Error::new_spanned(
+            input,
+            "SysmlTrace only supports structs (unit or otherwise)",
+        ));
+    }
+
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let (kind, requirement, target) = read_trace_meta(&input.attrs)?;
+
+    let name = &input.ident;
+    let statement = match kind {
+        TraceKind::Satisfy => {
+            // `satisfy requirement <REQ> by <Self>;`
+            format!("satisfy requirement {requirement} by {name};\n")
+        }
+        TraceKind::Derive => {
+            // `requirement <Self> :> <REQ>;` — the derived requirement
+            // (named by Self) is a specialization of <REQ>.
+            format!("requirement {name} :> {requirement};\n")
+        }
+        TraceKind::Refine => {
+            // `requirement <Self> :>> <REQ>;` — refinement.
+            format!("requirement {name} :>> {requirement};\n")
+        }
+        TraceKind::Verify => {
+            // `verify requirement <REQ>;` — the inner statement for a
+            // `verification def <Self> { ... }` block owned by the caller.
+            format!("verify requirement {requirement};\n")
+        }
+        TraceKind::Allocate => {
+            // `allocate <Self> to <Target>;`
+            format!("allocate {name} to {target};\n")
+        }
+    };
+
+    let expanded = quote! {
+        impl #impl_generics #name #type_generics #where_clause {
+            /// SysML-v2 trace-relation statement for this type, generated at
+            /// compile time by `#[derive(SysmlTrace)]`. Composes with
+            /// `SysmlBlock`/`SysmlRequirement` for the subject element.
+            pub const fn sysml_trace_def() -> &'static str {
+                #statement
+            }
+        }
+    };
+
+    Ok(expanded)
+}
+
+fn read_trace_meta(attrs: &[syn::Attribute]) -> syn::Result<(TraceKind, String, String)> {
+    let mut kind: Option<TraceKind> = None;
+    let mut requirement: Option<String> = None;
+    let mut target: Option<String> = None;
+    for attribute in attrs.iter().filter(|a| a.path().is_ident("sysml")) {
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("kind") {
+                if kind.is_some() {
+                    return Err(meta.error("duplicate SysmlTrace kind"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                let parsed = trace_kind_from_str(&value).ok_or_else(|| {
+                    meta.error(
+                        "kind must be one of: \"satisfy\", \"derive\", \"refine\", \"verify\", \"allocate\"",
+                    )
+                })?;
+                kind = Some(parsed);
+                Ok(())
+            } else if meta.path.is_ident("requirement") {
+                if requirement.is_some() {
+                    return Err(meta.error("duplicate SysmlTrace requirement"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                validate_identifier(&value, "SysmlTrace requirement")?;
+                requirement = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("target") {
+                if target.is_some() {
+                    return Err(meta.error("duplicate SysmlTrace target"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                validate_identifier(&value, "SysmlTrace target")?;
+                target = Some(value);
+                Ok(())
+            } else {
+                Err(meta.error(
+                    "expected #[sysml(kind = \"...\")] and/or #[sysml(requirement = \"...\")]/#[sysml(target = \"...\")]",
+                ))
+            }
+        })?;
+    }
+    let kind = kind.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "SysmlTrace requires #[sysml(kind = \"satisfy\"|\"derive\"|\"refine\"|\"verify\"|\"allocate\")]",
+        )
+    })?;
+    if matches!(kind, TraceKind::Allocate) {
+        let target = target.ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "SysmlTrace with kind = \"allocate\" requires #[sysml(target = \"...\")]",
+            )
+        })?;
+        Ok((kind, String::new(), target))
+    } else {
+        let requirement = requirement.ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "SysmlTrace with the given kind requires #[sysml(requirement = \"...\")]",
+            )
+        })?;
+        Ok((kind, requirement, target.unwrap_or_default()))
+    }
 }
 
 fn field_mapping(field: &syn::Field) -> syn::Result<Option<String>> {
