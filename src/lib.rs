@@ -73,6 +73,37 @@ pub fn derive_sysml_block(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[derive(SysmlRequirement)]` — like `SysmlBlock`, but emits a
+/// `requirement def <id> { doc /* <text> */ attribute ... }` instead of a
+/// `part def <Name> { attribute ... }`. SysML v2 requirements are first-class
+/// elements with their own keyword, an `id` (often `REQ-XXX`), and a `doc`
+/// clause for the requirement statement; this derive produces all three
+/// from the same Rust field walk that `SysmlBlock` uses, with two
+/// additional `#[sysml(...)]` attributes:
+///
+/// - `#[sysml(id = "REQ-001")]` — the requirement's identifier text. If
+///   absent, the Rust struct's `ident` is used (so `Requirement<Rust>`
+///   becomes `requirement def Requirement<Rust>`, but the angle-bracket
+///   rule from `SysmlBlock`'s docstring still applies — supply an `id`
+///   when the name would contain generics).
+/// - `#[sysml(doc = "The system shall ...")]` — the `doc /* ... */` body
+///   of the requirement. If absent, the body is empty (still valid
+///   `requirement def`; downstream tooling reads the doc separately).
+///
+/// The required-library constraint is the same as `SysmlBlock`: every
+/// type reference must resolve against the caller's selected model
+/// before publication; `sysml_requirement_def_checked` makes missing
+/// symbols explicit. The kind on round-trip is `RequirementDefinition`
+/// (per `ufo_types::ElementKind`), not `PartDefinition`.
+#[proc_macro_derive(SysmlRequirement, attributes(sysml))]
+pub fn derive_sysml_requirement(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match expand_requirement(&input) {
+        Ok(expanded) => expanded.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
 fn expand_block(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
@@ -139,6 +170,158 @@ fn expand_block(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     };
 
     Ok(expanded)
+}
+
+fn expand_requirement(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let name = &input.ident;
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+
+    let named_fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(named) => &named.named,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SysmlRequirement only supports structs with named fields",
+                ));
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                input,
+                "SysmlRequirement only supports structs",
+            ));
+        }
+    };
+
+    let (id_text, doc_text) = read_requirement_meta(&input.attrs, name.to_string())?;
+
+    let mut attribute_lines = String::new();
+    let mut references = std::collections::BTreeSet::new();
+    for field in named_fields {
+        let field_name = field.ident.as_ref().unwrap().to_string();
+        let mapped_type = field_mapping(field)?;
+        let (sysml_type, multiplicity) =
+            sysml_type_and_multiplicity(&field.ty, mapped_type.as_deref())?;
+        references.insert(sysml_type.clone());
+        attribute_lines.push_str(&format!(
+            "    attribute {field_name} : {sysml_type}{multiplicity};\n"
+        ));
+    }
+
+    // The doc body is rendered as a C-style block comment so it preserves
+    // newlines and quotes without escaping; an empty doc still produces a
+    // valid `requirement def` (the `doc` clause is optional in the grammar).
+    let doc_clause = if doc_text.is_empty() {
+        String::new()
+    } else {
+        format!("    doc /* {doc_text} */\n")
+    };
+
+    let requirement_def = format!(
+        "requirement def {id_text} {{\n{doc_clause}{attribute_lines}}}\n"
+    );
+    let references: Vec<_> = references.into_iter().collect();
+
+    let expanded = quote! {
+        impl #impl_generics #name #type_generics #where_clause {
+            /// SysML-v2 requirement-definition text for this type, generated at
+            /// compile time by `#[derive(SysmlRequirement)]` walking its fields.
+            pub const fn sysml_requirement_def() -> &'static str {
+                #requirement_def
+            }
+
+            /// Required type symbols, sorted and deduplicated. The caller resolves
+            /// these against its selected model and pinned library inventory.
+            pub const fn sysml_type_references() -> &'static [&'static str] {
+                &[#(#references),*]
+            }
+
+            /// Emit only when every required type is present in the caller's
+            /// resolved scope. Missing symbols remain explicit, never defaults.
+            pub fn sysml_requirement_def_checked(
+                resolved_types: &[&str],
+            ) -> Result<&'static str, Vec<&'static str>> {
+                let missing: Vec<_> = Self::sysml_type_references().iter().copied()
+                    .filter(|reference| !resolved_types.contains(reference)).collect();
+                if missing.is_empty() { Ok(Self::sysml_requirement_def()) } else { Err(missing) }
+            }
+        }
+    };
+
+    Ok(expanded)
+}
+
+/// Extract the `id = "..."` and `doc = "..."` attribute values from a
+/// struct-level `#[sysml(...)]` attribute on a `SysmlRequirement` derive.
+/// Defaults: id = struct ident, doc = empty. The id is restricted to the
+/// same qualified-name shape as `field_mapping`'s type override; the
+/// doc is opaque text rendered inside `/* ... */` so the caller is
+/// responsible for not putting `*/` in it.
+fn read_requirement_meta(
+    attrs: &[syn::Attribute],
+    default_id: String,
+) -> syn::Result<(String, String)> {
+    let mut id: Option<String> = None;
+    let mut doc: Option<String> = None;
+    for attribute in attrs.iter().filter(|a| a.path().is_ident("sysml")) {
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("id") {
+                if id.is_some() {
+                    return Err(meta.error("duplicate SysmlRequirement id"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                if value.is_empty()
+                    || value.contains(char::is_whitespace)
+                    || value.contains("*/")
+                    || value.contains("\"")
+                    || value.contains('\n')
+                    || value
+                            .chars()
+                            .next()
+                            .map(|c| !c.is_ascii_alphabetic() && c != '_')
+                            .unwrap_or(true)
+                    || value
+                            .chars()
+                            .any(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                {
+                    return Err(syn::Error::new_spanned(
+                        literal,
+                        "SysML requirement id must be an identifier: leading letter/underscore, then letters/digits/underscores only (no hyphens, whitespace, quotes, or newlines)",
+                    ));
+                }
+                id = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("doc") {
+                if doc.is_some() {
+                    return Err(meta.error("duplicate SysmlRequirement doc"));
+                }
+                let literal: syn::LitStr = meta.value()?.parse()?;
+                let value = literal.value();
+                if value.contains("*/") {
+                    return Err(syn::Error::new_spanned(
+                        literal,
+                        "doc text may not contain the block-comment terminator */",
+                    ));
+                }
+                doc = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("type") {
+                // `#[sysml(type = "...")]` is a per-field attribute on
+                // SysmlBlock; on SysmlRequirement's struct level it's a
+                // typo we want to surface, not silently accept.
+                Err(meta.error(
+                    "use #[sysml(type = \"...\")] on each field, not on the struct",
+                ))
+            } else {
+                Err(meta.error(
+                    "expected #[sysml(id = \"...\")] and/or #[sysml(doc = \"...\")]",
+                ))
+            }
+        })?;
+    }
+    Ok((id.unwrap_or(default_id), doc.unwrap_or_default()))
 }
 
 fn field_mapping(field: &syn::Field) -> syn::Result<Option<String>> {
