@@ -9,6 +9,9 @@
 //! the test that would have failed before that fix — `DateTime<Utc>` used
 //! to emit literally invalid syntax).
 
+// These structs are compile-time AST fixtures; their fields are not instantiated.
+#![allow(dead_code)]
+
 use sysml_derive::SysmlBlock;
 use ufo_types::sysml::validate_sysml_v2;
 
