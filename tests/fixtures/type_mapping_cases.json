@@ -1,0 +1,20 @@
+[
+  {"source":"struct M { value: Vec<DateTime<Utc>> }", "attribute":"attribute value : ScalarValues::String[*];"},
+  {"source":"struct M { value: Option<DateTime<Utc>> }", "attribute":"attribute value : ScalarValues::String[0..1];"},
+  {"source":"struct M { value: std::string::String }", "attribute":"attribute value : ScalarValues::String;"},
+  {"source":"struct M { value: std::vec::Vec<core::primitive::u8> }", "attribute":"attribute value : ScalarValues::Natural[*];"},
+  {"source":"struct M { value: custom::Vec<u8> }", "error":"explicit SysML type mapping"},
+  {"source":"struct M { value: Outer<u8>::DateTime<Utc> }", "error":"explicit SysML type mapping"},
+  {"source":"struct M { value: Vec<Vec<u8>> }", "error":"cannot be flattened without losing structure"},
+  {"source":"struct M { value: Option<Vec<u8>> }", "error":"cannot be flattened without losing structure"},
+  {"source":"struct M { value: Option<Custom<Node>> }", "error":"explicit SysML type mapping"},
+  {"source":"struct M { value: &'static str }", "error":"explicit sysml"},
+  {"source":"struct M { #[sysml(type = \"Domain::Sequence\")] value: Vec<Vec<u8>> }", "attribute":"attribute value : Domain::Sequence[*];"},
+  {"source":"struct M { #[sysml(type = \"Domain::Timestamp\")] value: Option<DateTime<Utc>> }", "attribute":"attribute value : Domain::Timestamp[0..1];"},
+  {"source":"struct M { #[sysml(type = \"Outer<Inner>\")] value: u8 }", "error":"qualified SysML type name"},
+  {"source":"struct M { #[sysml(type = \"\")] value: u8 }", "error":"qualified SysML type name"},
+  {"source":"struct M { #[sysml(type = \"Domain::\")] value: u8 }", "error":"qualified SysML type name"},
+  {"source":"struct M { #[sysml(type = \"Domain::r#type\")] value: u8 }", "error":"qualified SysML type name"},
+  {"source":"struct M { #[sysml(type = \"Domain::Node\", type = \"Domain::Other\")] value: u8 }", "error":"duplicate SysML type mapping"},
+  {"source":"struct M { #[sysml(unknown = \"Domain::Node\")] value: u8 }", "error":"expected sysml"}
+]

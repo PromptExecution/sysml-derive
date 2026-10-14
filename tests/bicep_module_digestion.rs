@@ -20,6 +20,9 @@
 //! lines here, which is a known modeling gap worth a follow-up (SysML v2
 //! has `in`/`out` feature directionality that a real generator should use).
 
+// This struct is a compile-time AST fixture; its fields are not instantiated.
+#![allow(dead_code)]
+
 use sysml_derive::SysmlBlock;
 use ufo_types::sysml::validate_sysml_v2;
 

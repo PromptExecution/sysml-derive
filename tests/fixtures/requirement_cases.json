@@ -1,0 +1,58 @@
+[
+  {
+    "name": "explicit_id_with_doc",
+    "source": "#[sysml(id = \"REQ-1\", doc = \"Shall do X\")] struct R { a: String }",
+    "id": "REQ-1",
+    "doc": "Shall do X",
+    "attribute": "attribute a : ScalarValues::String;"
+  },
+  {
+    "name": "default_id_empty_doc",
+    "source": "struct R { count: u32 }",
+    "id": "R",
+    "doc": "",
+    "attribute": "attribute count : ScalarValues::Natural;"
+  },
+  {
+    "name": "vector_with_explicit_id",
+    "source": "#[sysml(id = \"REQ-Vec\")] struct R { items: Vec<String> }",
+    "id": "REQ-Vec",
+    "doc": "",
+    "attribute": "attribute items : ScalarValues::String[*];"
+  },
+  {
+    "name": "option_with_explicit_id",
+    "source": "#[sysml(id = \"REQ-Opt\", doc = \"optional\")] struct R { v: Option<String> }",
+    "id": "REQ-Opt",
+    "doc": "optional",
+    "attribute": "attribute v : ScalarValues::String[0..1];"
+  },
+  {
+    "name": "explicit_field_type_mapping",
+    "source": "struct R { #[sysml(type = \"Domain::Node\")] n: u32 }",
+    "id": "R",
+    "doc": "",
+    "attribute": "attribute n : Domain::Node;"
+  },
+  {
+    "name": "rational_field",
+    "source": "struct R { x: f64 }",
+    "id": "R",
+    "doc": "",
+    "attribute": "attribute x : ScalarValues::Rational;"
+  },
+  {
+    "name": "boolean_field",
+    "source": "struct R { b: bool }",
+    "id": "R",
+    "doc": "",
+    "attribute": "attribute b : ScalarValues::Boolean;"
+  },
+  {
+    "name": "doc_with_unicode_and_punctuation",
+    "source": "#[sysml(id = \"REQ-日本語\", doc = \"The system, per ISO 9001:2015, shall ...\")] struct R { tag: String }",
+    "id": "REQ-日本語",
+    "doc": "The system, per ISO 9001:2015, shall ...",
+    "attribute": "attribute tag : ScalarValues::String;"
+  }
+]
